@@ -497,3 +497,101 @@ func TestSignerCompatibilityWithStdlib(t *testing.T) {
 		t.Error("crypto/ed25519 failed to verify signature from red25519 crypto.Signer")
 	}
 }
+
+// TestVerifyNonCanonicalR verifies that a signature with a non-canonical R
+// encoding (valid 32 bytes but not a valid curve point) is rejected.
+func TestVerifyNonCanonicalR(t *testing.T) {
+	pub, priv, _ := GenerateKey(rand.Reader)
+	msg := []byte("non-canonical R test")
+	sig := Sign(priv, msg)
+
+	// Replace R (first 32 bytes) with a non-canonical point encoding.
+	// All 0xFF bytes do not represent a valid Ed25519 point.
+	for i := 0; i < 32; i++ {
+		sig[i] = 0xFF
+	}
+	if Verify(pub, msg, sig) {
+		t.Error("should reject signature with non-canonical R encoding")
+	}
+
+	// Also try all zeros — the identity point encoding. The R parse step
+	// itself will succeed (identity is a valid point encoding), but the
+	// overall verification equation should still fail because S and the
+	// challenge no longer match.
+	sig2 := Sign(priv, msg)
+	for i := 0; i < 32; i++ {
+		sig2[i] = 0x00
+	}
+	// Set the sign bit correctly for identity: 0x01 at byte 0
+	sig2[0] = 0x01
+	if Verify(pub, msg, sig2) {
+		t.Error("should reject signature with identity R")
+	}
+}
+
+// TestSignVerifyWithStdlibRoundTrip verifies bidirectional compatibility:
+// sign with crypto/ed25519, verify with red25519 on the same seed.
+func TestSignVerifyWithStdlibRoundTrip(t *testing.T) {
+	seed := make([]byte, SeedSize)
+	_, _ = io.ReadFull(rand.Reader, seed)
+
+	stdPriv := ed25519.NewKeyFromSeed(seed)
+	redPub := NewKeyFromSeed(seed).Public().(PublicKey)
+
+	messages := [][]byte{
+		[]byte("hello from stdlib"),
+		[]byte(""),
+		nil,
+		[]byte("a]longer message for cross-library round-trip testing"),
+	}
+
+	for i, msg := range messages {
+		// Sign with crypto/ed25519.
+		stdSig := ed25519.Sign(stdPriv, msg)
+
+		// Verify with red25519.
+		if !Verify(redPub, msg, stdSig) {
+			t.Errorf("message %d: red25519 failed to verify crypto/ed25519 signature", i)
+		}
+
+		// Also sign with red25519 and verify with crypto/ed25519 for full round-trip.
+		redPriv := NewKeyFromSeed(seed)
+		redSig := Sign(redPriv, msg)
+		stdPub := stdPriv.Public().(ed25519.PublicKey)
+		if !ed25519.Verify(stdPub, msg, redSig) {
+			t.Errorf("message %d: crypto/ed25519 failed to verify red25519 signature", i)
+		}
+
+		// Signatures should be byte-identical (deterministic nonce derivation).
+		if !bytes.Equal(stdSig, redSig) {
+			t.Errorf("message %d: signatures differ between red25519 and crypto/ed25519", i)
+		}
+	}
+}
+
+// BenchmarkSign benchmarks the Sign function with a normal key.
+func BenchmarkSign(b *testing.B) {
+	_, priv, err := GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	msg := []byte("benchmark message for signing")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Sign(priv, msg)
+	}
+}
+
+// BenchmarkVerify benchmarks the Verify function.
+func BenchmarkVerify(b *testing.B) {
+	pub, priv, err := GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	msg := []byte("benchmark message for verification")
+	sig := Sign(priv, msg)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Verify(pub, msg, sig)
+	}
+}

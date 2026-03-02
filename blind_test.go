@@ -484,3 +484,111 @@ func TestComposeBlindingFactorsCommutativity(t *testing.T) {
 		t.Error("composition should be commutative")
 	}
 }
+
+// TestBlindPublicKeyInvalidPointEncoding verifies that BlindPublicKey rejects
+// a 32-byte payload that is the correct length but is not a valid Ed25519
+// curve point encoding.
+func TestBlindPublicKeyInvalidPointEncoding(t *testing.T) {
+	bf, _ := GenerateBlindingFactor(rand.Reader)
+
+	// All 0xFF bytes: valid length but not a valid curve point.
+	badPub := make(PublicKey, PublicKeySize)
+	for i := range badPub {
+		badPub[i] = 0xFF
+	}
+	_, err := BlindPublicKey(badPub, bf)
+	if err == nil {
+		t.Error("should reject invalid point encoding (all 0xFF)")
+	}
+
+	// All zeros except last byte high bit set: not a valid point.
+	badPub2 := make(PublicKey, PublicKeySize)
+	badPub2[31] = 0x80 // sign bit set, rest zero — not on curve
+	_, err = BlindPublicKey(badPub2, bf)
+	if err == nil {
+		t.Error("should reject invalid point encoding (zero with sign bit)")
+	}
+
+	// Random bytes from a non-point encoding. The probability that 32
+	// random bytes happen to land on a valid Ed25519 point is negligible.
+	randomBad := make(PublicKey, PublicKeySize)
+	// Use a known non-point: high bytes that exceed the field prime.
+	randomBad[31] = 0xFE
+	for i := 0; i < 31; i++ {
+		randomBad[i] = 0xFF
+	}
+	_, err = BlindPublicKey(randomBad, bf)
+	if err == nil {
+		t.Error("should reject invalid point encoding (above field prime)")
+	}
+}
+
+// TestBlindedKeyReconstructionFails verifies that calling
+// NewKeyFromSeed(blindedPriv.Seed()) does NOT recreate the blinded key.
+// This guards against caller confusion: the first 32 bytes of a blinded
+// key are a scalar, not a seed, so re-expanding them produces an
+// unrelated normal key.
+func TestBlindedKeyReconstructionFails(t *testing.T) {
+	_, priv, _ := GenerateKey(rand.Reader)
+	bf, _ := GenerateBlindingFactor(rand.Reader)
+
+	blindedPriv, err := BlindPrivateKey(priv, bf)
+	if err != nil {
+		t.Fatalf("BlindPrivateKey: %v", err)
+	}
+
+	// Attempt to reconstruct by treating the scalar as a seed.
+	reconstructed := NewKeyFromSeed(blindedPriv.Seed())
+
+	// The reconstructed key must NOT equal the blinded key.
+	if blindedPriv.Equal(reconstructed) {
+		t.Error("NewKeyFromSeed(blindedPriv.Seed()) should NOT recreate the blinded key")
+	}
+
+	// The public keys must also differ.
+	blindedPub := blindedPriv.Public().(PublicKey)
+	reconstructedPub := reconstructed.Public().(PublicKey)
+	if blindedPub.Equal(reconstructedPub) {
+		t.Error("public keys should differ: blinded vs reconstructed-from-seed")
+	}
+
+	// Verify that signing with the reconstructed key does NOT produce
+	// signatures verifiable with the blinded public key.
+	msg := []byte("reconstruction test")
+	sigReconstructed := Sign(reconstructed, msg)
+	if Verify(blindedPub, msg, sigReconstructed) {
+		t.Error("signature from reconstructed key should not verify with blinded public key")
+	}
+}
+
+// BenchmarkBlindPrivateKey benchmarks the BlindPrivateKey function.
+func BenchmarkBlindPrivateKey(b *testing.B) {
+	_, priv, err := GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	bf, err := GenerateBlindingFactor(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = BlindPrivateKey(priv, bf)
+	}
+}
+
+// BenchmarkBlindPublicKey benchmarks the BlindPublicKey function.
+func BenchmarkBlindPublicKey(b *testing.B) {
+	pub, _, err := GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	bf, err := GenerateBlindingFactor(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = BlindPublicKey(pub, bf)
+	}
+}
