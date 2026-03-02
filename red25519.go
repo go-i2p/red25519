@@ -7,6 +7,10 @@
 // The API mirrors crypto/ed25519, so callers can treat it as a near drop-in
 // replacement with additional BlindPublicKey, BlindPrivateKey, and
 // BlindingFactor primitives (see blind.go).
+//
+// Verify is intentionally stricter than crypto/ed25519.Verify: it rejects
+// identity-point public keys, which would allow trivial signature forgery.
+// Normal Ed25519 keypairs are unaffected.
 package red25519
 
 import (
@@ -15,6 +19,7 @@ import (
 	"crypto/sha512"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"io"
 
 	"filippo.io/edwards25519"
@@ -84,17 +89,40 @@ func (priv PrivateKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpt
 	return Sign(priv, digest), nil
 }
 
+// IsBlinded reports whether priv is a blinded key (produced by [BlindPrivateKey]).
+// Blinded keys use a 96-byte internal format and have different semantics for
+// [PrivateKey.Seed] and [PrivateKey.Scalar].
+func (priv PrivateKey) IsBlinded() bool {
+	return len(priv) == blindedPrivateKeySize
+}
+
 // Seed returns the private key seed (the first 32 bytes).
 // For normal keys, this can be used with [NewKeyFromSeed] to regenerate the key.
 //
 // WARNING: For blinded keys (produced by [BlindPrivateKey]), the first 32 bytes
 // contain the raw scalar, not a seed. Calling NewKeyFromSeed with a blinded
 // key's Seed will NOT recreate the blinded key — it will produce an unrelated
-// normal key.
+// normal key. Use [PrivateKey.IsBlinded] to check, and [PrivateKey.Scalar] to
+// retrieve the blinded scalar explicitly.
 func (priv PrivateKey) Seed() []byte {
 	seed := make([]byte, SeedSize)
 	copy(seed, priv[:SeedSize])
 	return seed
+}
+
+// Scalar returns the private scalar as a 32-byte canonical encoding.
+// For blinded keys (produced by [BlindPrivateKey]), this is the stored
+// blinded scalar a' = a·b mod ℓ. For normal keys, this is derived by
+// expanding the seed via SHA-512 and clamping, matching the Ed25519
+// key derivation procedure.
+//
+// The returned scalar is the secret signing exponent. Handle it with the
+// same care as the private key itself.
+func (priv PrivateKey) Scalar() []byte {
+	s, _ := expandPrivateKey(priv)
+	out := make([]byte, 32)
+	copy(out, s.Bytes())
+	return out
 }
 
 // Equal reports whether priv and x have the same value.
@@ -187,7 +215,7 @@ func expandPrivateKey(priv PrivateKey) (scalar *edwards25519.Scalar, prefix []by
 // domain-separated prefix.
 func Sign(privateKey PrivateKey, message []byte) []byte {
 	if !isValidPrivateKeyLen(privateKey) {
-		panic("red25519: bad private key length")
+		panic(fmt.Sprintf("red25519: bad private key length: %d", len(privateKey)))
 	}
 
 	// Extract scalar and nonce prefix (works for both normal and blinded keys).
@@ -232,6 +260,11 @@ func Sign(privateKey PrivateKey, message []byte) []byte {
 
 // Verify reports whether sig is a valid signature of message by publicKey.
 // It returns false for malformed inputs.
+//
+// Unlike [crypto/ed25519.Verify], this function rejects the identity point
+// as a public key. The identity point allows trivial forgery (S·B = R for
+// any message), so rejecting it is a defense-in-depth measure. Normal
+// Ed25519 keypairs are unaffected by this check.
 func Verify(publicKey PublicKey, message []byte, sig []byte) bool {
 	if len(publicKey) != PublicKeySize {
 		return false

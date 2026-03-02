@@ -6,7 +6,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"filippo.io/edwards25519"
@@ -102,6 +104,86 @@ func TestPrivateKeySeed(t *testing.T) {
 	}
 }
 
+// TestIsBlinded verifies that IsBlinded correctly distinguishes normal
+// and blinded private keys.
+func TestIsBlinded(t *testing.T) {
+	_, priv, _ := GenerateKey(rand.Reader)
+	if priv.IsBlinded() {
+		t.Error("normal key should not report as blinded")
+	}
+
+	bf, _ := GenerateBlindingFactor(rand.Reader)
+	blindedPriv, _ := BlindPrivateKey(priv, bf)
+	if !blindedPriv.IsBlinded() {
+		t.Error("blinded key should report as blinded")
+	}
+}
+
+// TestScalar verifies that Scalar() returns the correct private scalar
+// for both normal and blinded keys.
+func TestScalar(t *testing.T) {
+	t.Run("normal key scalar matches stdlib derivation", func(t *testing.T) {
+		seed := make([]byte, SeedSize)
+		_, _ = io.ReadFull(rand.Reader, seed)
+		priv := NewKeyFromSeed(seed)
+
+		scalar := priv.Scalar()
+		if len(scalar) != 32 {
+			t.Fatalf("Scalar() returned %d bytes, want 32", len(scalar))
+		}
+
+		// The scalar should NOT equal the seed (it's derived via SHA-512+clamping).
+		if bytes.Equal(scalar, seed) {
+			t.Error("scalar should differ from seed")
+		}
+
+		// Two calls should return equal values (deterministic).
+		scalar2 := priv.Scalar()
+		if !bytes.Equal(scalar, scalar2) {
+			t.Error("Scalar() is not deterministic for normal keys")
+		}
+	})
+
+	t.Run("blinded key scalar matches first 32 bytes", func(t *testing.T) {
+		_, priv, _ := GenerateKey(rand.Reader)
+		bf, _ := GenerateBlindingFactor(rand.Reader)
+		blindedPriv, _ := BlindPrivateKey(priv, bf)
+
+		scalar := blindedPriv.Scalar()
+		if len(scalar) != 32 {
+			t.Fatalf("Scalar() returned %d bytes, want 32", len(scalar))
+		}
+
+		// For blinded keys, Scalar() should return the same bytes as stored
+		// in the first 32 bytes (the blinded scalar).
+		if !bytes.Equal(scalar, blindedPriv[:32]) {
+			t.Error("Scalar() on blinded key should match stored scalar")
+		}
+	})
+
+	t.Run("blinded scalar differs from Seed on normal key", func(t *testing.T) {
+		seed := make([]byte, SeedSize)
+		_, _ = io.ReadFull(rand.Reader, seed)
+		priv := NewKeyFromSeed(seed)
+
+		// Seed() returns the raw seed; Scalar() returns the derived scalar.
+		if bytes.Equal(priv.Seed(), priv.Scalar()) {
+			t.Error("Seed() and Scalar() should differ for normal keys")
+		}
+	})
+
+	t.Run("scalar is independent copy", func(t *testing.T) {
+		_, priv, _ := GenerateKey(rand.Reader)
+		scalar := priv.Scalar()
+		// Mutating the returned slice should not affect the key.
+		scalar[0] ^= 0xFF
+		scalar2 := priv.Scalar()
+		if bytes.Equal(scalar, scalar2) {
+			t.Error("Scalar() should return independent copies")
+		}
+	})
+}
+
 func TestSignVerify(t *testing.T) {
 	pub, priv, err := GenerateKey(rand.Reader)
 	if err != nil {
@@ -190,8 +272,13 @@ func TestVerifyBadInputLengths(t *testing.T) {
 
 func TestSignPanicsBadKeyLength(t *testing.T) {
 	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for bad private key length")
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for bad private key length")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "32") {
+			t.Errorf("panic message should include actual length 32, got: %s", msg)
 		}
 	}()
 	Sign(PrivateKey(make([]byte, 32)), []byte("msg"))

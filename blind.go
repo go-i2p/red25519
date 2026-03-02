@@ -3,6 +3,7 @@ package red25519
 import (
 	cryptorand "crypto/rand"
 	"crypto/sha512"
+	"crypto/subtle"
 	"fmt"
 	"io"
 
@@ -49,15 +50,43 @@ func clampBlindingFactor(b []byte) {
 	b[31] |= 64
 }
 
+// zeroScalarBytes is the canonical encoding of the zero scalar (all zeros).
+// Used for constant-time comparison to detect degenerate blinding factors.
+var zeroScalarBytes = make([]byte, 32)
+
 // scalarFromBlind converts a BlindingFactor to an edwards25519 scalar.
-// It first attempts canonical decoding (for composed factors produced by
-// ComposeBlindingFactors), falling back to clamped decoding (for factors
-// produced by GenerateBlindingFactor or external sources).
+//
+// It uses two decoding paths depending on the input:
+//
+//   - Canonical path (SetCanonicalBytes): Used for composed factors produced
+//     by [ComposeBlindingFactors], which are already reduced mod ℓ. These
+//     factors bypass clamping because Multiply produces canonical output.
+//
+//   - Clamped path (SetBytesWithClamping): Used for factors produced by
+//     [GenerateBlindingFactor] or external sources. These are raw 32-byte
+//     values that need Ed25519 clamping (clear low 3 bits, set bit 254,
+//     clear bit 255) before use as a scalar.
+//
+// Both paths are mathematically correct; the dual interpretation is needed
+// because composed factors (canonical scalars) and generated factors
+// (unclamped byte strings) have different representations. Callers should
+// not rely on which path is taken — only that the returned scalar is valid.
 func scalarFromBlind(blind BlindingFactor) (*edwards25519.Scalar, error) {
 	if s, err := edwards25519.NewScalar().SetCanonicalBytes(blind); err == nil {
 		return s, nil
 	}
+	// SetBytesWithClamping requires len(blind) == 32. All callers
+	// (BlindPublicKey, BlindPrivateKey, ComposeBlindingFactors) validate
+	// the length before calling scalarFromBlind, so this error path is
+	// unreachable in normal use. The error is still propagated for
+	// defense-in-depth.
 	return edwards25519.NewScalar().SetBytesWithClamping(blind)
+}
+
+// isZeroScalar reports whether s is the zero scalar, using a constant-time
+// comparison to avoid leaking information about the scalar value.
+func isZeroScalar(s *edwards25519.Scalar) bool {
+	return subtle.ConstantTimeCompare(s.Bytes(), zeroScalarBytes) == 1
 }
 
 // BlindPublicKey derives a blinded public key by multiplying the public key
@@ -80,6 +109,9 @@ func BlindPublicKey(pub PublicKey, blind BlindingFactor) (PublicKey, error) {
 	b, err := scalarFromBlind(blind)
 	if err != nil {
 		return nil, fmt.Errorf("red25519: invalid blinding factor: %w", err)
+	}
+	if isZeroScalar(b) {
+		return nil, fmt.Errorf("red25519: zero blinding factor produces degenerate key")
 	}
 
 	// A' = b · A
@@ -109,6 +141,9 @@ func BlindPrivateKey(priv PrivateKey, blind BlindingFactor) (PrivateKey, error) 
 	b, err := scalarFromBlind(blind)
 	if err != nil {
 		return nil, fmt.Errorf("red25519: invalid blinding factor: %w", err)
+	}
+	if isZeroScalar(b) {
+		return nil, fmt.Errorf("red25519: zero blinding factor produces degenerate key")
 	}
 
 	// Extract scalar and nonce prefix from the source key.
@@ -155,6 +190,12 @@ func deriveBlindedPrefix(blind BlindingFactor, originalPrefix []byte) []byte {
 // For private key blinding, the composed factor yields the same scalar
 // and public key but a different deterministic nonce prefix, so signatures
 // will differ from those produced by sequential blinding. Both are valid.
+//
+// The returned [BlindingFactor] is a canonical scalar (reduced mod ℓ),
+// not a clamped byte string. When passed to [BlindPublicKey] or
+// [BlindPrivateKey], it takes the canonical decoding path in
+// scalarFromBlind (SetCanonicalBytes), bypassing clamping. This is
+// correct because the Multiply output is already a valid scalar.
 func ComposeBlindingFactors(bf1, bf2 BlindingFactor) (BlindingFactor, error) {
 	if len(bf1) != BlindingFactorSize {
 		return nil, fmt.Errorf("red25519: bad first blinding factor length: %d", len(bf1))

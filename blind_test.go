@@ -555,6 +555,34 @@ func TestBlindedKeyReconstructionFails(t *testing.T) {
 	}
 }
 
+// TestZeroBlindingFactor verifies that BlindPublicKey and BlindPrivateKey
+// reject a zero blinding factor. A zero scalar produces the identity point
+// (degenerate key), so the functions should return an error rather than
+// silently producing unusable keys.
+func TestZeroBlindingFactor(t *testing.T) {
+	pub, priv, _ := GenerateKey(rand.Reader)
+
+	// A zero blinding factor: all 32 bytes are zero.
+	// After clamping (the fallback path in scalarFromBlind), the result
+	// is still the zero scalar because clamping only touches bits 0-2,
+	// 254, and 255. SetCanonicalBytes succeeds for zero (it is canonical).
+	zeroBf := BlindingFactor(make([]byte, BlindingFactorSize))
+
+	t.Run("BlindPublicKey rejects zero", func(t *testing.T) {
+		_, err := BlindPublicKey(pub, zeroBf)
+		if err == nil {
+			t.Error("BlindPublicKey should reject zero blinding factor")
+		}
+	})
+
+	t.Run("BlindPrivateKey rejects zero", func(t *testing.T) {
+		_, err := BlindPrivateKey(priv, zeroBf)
+		if err == nil {
+			t.Error("BlindPrivateKey should reject zero blinding factor")
+		}
+	})
+}
+
 // BenchmarkBlindPrivateKey benchmarks the BlindPrivateKey function.
 func BenchmarkBlindPrivateKey(b *testing.B) {
 	_, priv, err := GenerateKey(rand.Reader)

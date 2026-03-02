@@ -15,6 +15,12 @@ and verification. This is used in the I2P network for destination blinding
 The API mirrors `crypto/ed25519`, so callers can treat it as a near drop-in
 replacement with additional blinding primitives.
 
+> **Note:** `Verify` is intentionally stricter than `crypto/ed25519.Verify`: it
+> rejects the identity point as a public key (which would allow trivial
+> signature forgery on any message). A contrived identity-point "public key"
+> that passes `crypto/ed25519.Verify` will be rejected by `red25519.Verify`.
+> Normal Ed25519 keypairs are unaffected.
+
 ## Features
 
 - **Ed25519 compatible** — unblinded signatures are byte-identical to `crypto/ed25519`
@@ -98,10 +104,13 @@ func main() {
 | `GenerateKey(rand)` | Generate a new Ed25519 keypair |
 | `NewKeyFromSeed(seed)` | Derive a private key from a 32-byte seed (deterministic) |
 | `Sign(privateKey, message)` | Sign a message (works with normal and blinded keys) |
-| `Verify(publicKey, message, sig)` | Verify a signature |
+| `Verify(publicKey, message, sig)` | Verify a signature (rejects identity-point public keys) |
 | `GenerateBlindingFactor(rand)` | Generate a random clamped blinding factor |
 | `BlindPublicKey(pub, blind)` | Derive a blinded public key: `A' = b·A` |
 | `BlindPrivateKey(priv, blind)` | Derive a blinded private key: `a' = a·b mod ℓ` |
+| `ComposeBlindingFactors(bf1, bf2)` | Compose two blinding factors: `bf1·bf2 mod ℓ` |
+| `PrivateKey.IsBlinded()` | Reports whether a key was produced by `BlindPrivateKey` |
+| `PrivateKey.Scalar()` | Returns the 32-byte private scalar (derived or stored) |
 
 ## Dependencies
 
