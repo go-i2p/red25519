@@ -9,8 +9,9 @@
 // BlindingFactor primitives (see blind.go).
 //
 // Verify is intentionally stricter than crypto/ed25519.Verify: it rejects
-// identity-point public keys, which would allow trivial signature forgery.
-// Normal Ed25519 keypairs are unaffected.
+// all small-order public keys (order dividing the cofactor 8), which would
+// allow trivial or near-trivial signature forgery. Normal Ed25519 keypairs
+// are unaffected.
 package red25519
 
 import (
@@ -27,6 +28,27 @@ import (
 
 // Compile-time check: PrivateKey implements crypto.Signer.
 var _ crypto.Signer = PrivateKey(nil)
+
+// cofactorScalar is the Ed25519 cofactor (8) encoded as a canonical scalar.
+// Used by isSmallOrder to detect torsion points.
+var cofactorScalar = func() *edwards25519.Scalar {
+	b := make([]byte, 32)
+	b[0] = 8
+	s, err := edwards25519.NewScalar().SetCanonicalBytes(b)
+	if err != nil {
+		panic("red25519: internal error: cofactor scalar: " + err.Error())
+	}
+	return s
+}()
+
+// isSmallOrder reports whether P is a small-order point (order dividing the
+// Ed25519 cofactor 8). It computes [8]P and checks if the result is the
+// identity. Small-order public keys allow trivial or near-trivial signature
+// forgery and should be rejected.
+func isSmallOrder(P *edwards25519.Point) bool {
+	check := edwards25519.NewIdentityPoint().ScalarMult(cofactorScalar, P)
+	return check.Equal(edwards25519.NewIdentityPoint()) == 1
+}
 
 const (
 	// PublicKeySize is the size, in bytes, of public keys.
@@ -261,10 +283,11 @@ func Sign(privateKey PrivateKey, message []byte) []byte {
 // Verify reports whether sig is a valid signature of message by publicKey.
 // It returns false for malformed inputs.
 //
-// Unlike [crypto/ed25519.Verify], this function rejects the identity point
-// as a public key. The identity point allows trivial forgery (S·B = R for
-// any message), so rejecting it is a defense-in-depth measure. Normal
-// Ed25519 keypairs are unaffected by this check.
+// Unlike [crypto/ed25519.Verify], this function rejects all small-order
+// public keys (points whose order divides the cofactor 8), not just the
+// identity. Small-order points allow trivial or near-trivial forgery
+// because k·A collapses to the identity (or a predictable torsion point)
+// for all challenges k. Normal Ed25519 keypairs are unaffected.
 func Verify(publicKey PublicKey, message []byte, sig []byte) bool {
 	if len(publicKey) != PublicKeySize {
 		return false
@@ -279,10 +302,12 @@ func Verify(publicKey PublicKey, message []byte, sig []byte) bool {
 		return false
 	}
 
-	// Reject the identity point as a public key. If A is the identity,
-	// then k·A = identity for all k, so the verification equation reduces
-	// to S·B = R, allowing trivial forgery on any message.
-	if A.Equal(edwards25519.NewIdentityPoint()) == 1 {
+	// Reject small-order public keys. If A has small order (dividing the
+	// cofactor 8), then [8]A = identity, meaning k·A cycles through at
+	// most 8 values regardless of k. This allows trivial or near-trivial
+	// forgery. The identity point (order 1) is the most obvious case, but
+	// all 8 torsion points are rejected for defense-in-depth.
+	if isSmallOrder(A) {
 		return false
 	}
 

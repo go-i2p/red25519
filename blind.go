@@ -106,6 +106,13 @@ func BlindPublicKey(pub PublicKey, blind BlindingFactor) (PublicKey, error) {
 		return nil, fmt.Errorf("red25519: invalid public key: %w", err)
 	}
 
+	// Reject small-order input points. Blinding a small-order point
+	// produces another small-order point, which would be rejected by
+	// Verify. Failing early gives callers a clear error.
+	if isSmallOrder(A) {
+		return nil, fmt.Errorf("red25519: public key is a small-order point")
+	}
+
 	b, err := scalarFromBlind(blind)
 	if err != nil {
 		return nil, fmt.Errorf("red25519: invalid blinding factor: %w", err)

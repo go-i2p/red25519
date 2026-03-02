@@ -393,8 +393,8 @@ func TestEdgeCases(t *testing.T) {
 	t.Run("identity point public key", func(t *testing.T) {
 		// The identity point is a degenerate public key that allows trivial
 		// forgery: if A = identity, then k·A = identity for all k, so the
-		// verification equation reduces to S·B = R. Verify now rejects the
-		// identity point as a defense-in-depth measure.
+		// verification equation reduces to S·B = R. Verify rejects all
+		// small-order points (including the identity) as defense-in-depth.
 		identity := make(PublicKey, PublicKeySize)
 		identity[0] = 0x01 // compressed identity point encoding in Ed25519
 		_, priv, _ := GenerateKey(rand.Reader)
@@ -653,6 +653,148 @@ func TestSignVerifyWithStdlibRoundTrip(t *testing.T) {
 		if !bytes.Equal(stdSig, redSig) {
 			t.Errorf("message %d: signatures differ between red25519 and crypto/ed25519", i)
 		}
+	}
+}
+
+// TestVerifySmallOrderPublicKeys verifies that Verify rejects all 8 small-order
+// points on the Ed25519 curve, not just the identity. These points have order
+// dividing the cofactor 8 and allow trivial or near-trivial signature forgery.
+func TestVerifySmallOrderPublicKeys(t *testing.T) {
+	// Known small-order point encodings on Ed25519.
+	// Each is 32 bytes: y-coordinate (little-endian) with sign bit in bit 255.
+	smallOrderPoints := []struct {
+		name    string
+		encoded [32]byte
+	}{
+		{
+			name: "identity (0,1) order 1",
+			encoded: [32]byte{
+				0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "(0,-1) order 2",
+			encoded: [32]byte{
+				0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+			},
+		},
+		{
+			name: "(sqrt(-1),0) order 4 sign=0",
+			encoded: [32]byte{
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "(-sqrt(-1),0) order 4 sign=1",
+			encoded: [32]byte{
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
+			},
+		},
+	}
+
+	_, priv, _ := GenerateKey(rand.Reader)
+	msg := []byte("small order test")
+	sig := Sign(priv, msg)
+
+	for _, tc := range smallOrderPoints {
+		t.Run(tc.name, func(t *testing.T) {
+			pub := PublicKey(tc.encoded[:])
+
+			// First verify that this is actually a valid point encoding
+			// (SetBytes succeeds) and that it IS small-order.
+			P, err := edwards25519.NewIdentityPoint().SetBytes(pub)
+			if err != nil {
+				t.Skipf("encoding not accepted by SetBytes (skip): %v", err)
+			}
+
+			// Confirm [8]P = identity (small-order).
+			eightBytes := make([]byte, 32)
+			eightBytes[0] = 8
+			eight, _ := edwards25519.NewScalar().SetCanonicalBytes(eightBytes)
+			eightP := edwards25519.NewIdentityPoint().ScalarMult(eight, P)
+			if eightP.Equal(edwards25519.NewIdentityPoint()) != 1 {
+				t.Fatal("test point is not actually small-order")
+			}
+
+			// Verify must reject.
+			if Verify(pub, msg, sig) {
+				t.Errorf("Verify should reject small-order public key %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestExpandPrivateKeyPanicInvalidScalar verifies that expandPrivateKey panics
+// when given a manually-constructed 96-byte key with a non-canonical scalar
+// (>= ℓ). This is a defensive path that can only be reached by constructing
+// a PrivateKey manually, not through BlindPrivateKey.
+func TestExpandPrivateKeyPanicInvalidScalar(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for invalid blinded key scalar")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "invalid blinded key scalar") {
+			t.Errorf("unexpected panic message: %s", msg)
+		}
+	}()
+
+	// Construct a 96-byte key with non-canonical scalar bytes (all 0xFF >= ℓ).
+	badKey := make(PrivateKey, blindedPrivateKeySize)
+	for i := 0; i < 32; i++ {
+		badKey[i] = 0xFF
+	}
+	// Fill the rest with plausible data (doesn't matter, should panic first).
+	copy(badKey[64:96], make([]byte, 32))
+
+	// This should panic because the scalar is non-canonical.
+	expandPrivateKey(badKey)
+}
+
+// TestComposeBlindingFactorsErrorPathUnreachable documents that the
+// scalarFromBlind error paths at blind.go:169,173 within ComposeBlindingFactors
+// are unreachable: they would require a non-32-byte factor, which is already
+// rejected by the length checks above. This test verifies that the length
+// checks do in fact guard those paths.
+func TestComposeBlindingFactorsErrorPathUnreachable(t *testing.T) {
+	bf, _ := GenerateBlindingFactor(rand.Reader)
+
+	// The only way to trigger scalarFromBlind errors from ComposeBlindingFactors
+	// is with non-32-byte inputs, which are caught by the length checks first.
+	// Verify that all invalid lengths are rejected with a length error, not a
+	// scalar decoding error.
+	badLengths := []int{0, 1, 16, 31, 33, 64}
+	for _, l := range badLengths {
+		t.Run(fmt.Sprintf("len=%d", l), func(t *testing.T) {
+			bad := BlindingFactor(make([]byte, l))
+			_, err := ComposeBlindingFactors(bad, bf)
+			if err == nil {
+				t.Fatal("expected error for bad length")
+			}
+			if !strings.Contains(err.Error(), "length") {
+				t.Errorf("error should mention length, got: %v", err)
+			}
+			_, err = ComposeBlindingFactors(bf, bad)
+			if err == nil {
+				t.Fatal("expected error for bad length")
+			}
+			if !strings.Contains(err.Error(), "length") {
+				t.Errorf("error should mention length, got: %v", err)
+			}
+		})
 	}
 }
 

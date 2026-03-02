@@ -16,10 +16,9 @@ The API mirrors `crypto/ed25519`, so callers can treat it as a near drop-in
 replacement with additional blinding primitives.
 
 > **Note:** `Verify` is intentionally stricter than `crypto/ed25519.Verify`: it
-> rejects the identity point as a public key (which would allow trivial
-> signature forgery on any message). A contrived identity-point "public key"
-> that passes `crypto/ed25519.Verify` will be rejected by `red25519.Verify`.
-> Normal Ed25519 keypairs are unaffected.
+> rejects all small-order public keys (order dividing the cofactor 8), which
+> would allow trivial or near-trivial signature forgery. `BlindPublicKey` also
+> rejects small-order input points. Normal Ed25519 keypairs are unaffected.
 
 ## Features
 
@@ -104,7 +103,7 @@ func main() {
 | `GenerateKey(rand)` | Generate a new Ed25519 keypair |
 | `NewKeyFromSeed(seed)` | Derive a private key from a 32-byte seed (deterministic) |
 | `Sign(privateKey, message)` | Sign a message (works with normal and blinded keys) |
-| `Verify(publicKey, message, sig)` | Verify a signature (rejects identity-point public keys) |
+| `Verify(publicKey, message, sig)` | Verify a signature (rejects small-order public keys) |
 | `GenerateBlindingFactor(rand)` | Generate a random clamped blinding factor |
 | `BlindPublicKey(pub, blind)` | Derive a blinded public key: `A' = b·A` |
 | `BlindPrivateKey(priv, blind)` | Derive a blinded private key: `a' = a·b mod ℓ` |
