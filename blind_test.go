@@ -487,39 +487,33 @@ func TestComposeBlindingFactorsCommutativity(t *testing.T) {
 
 // TestBlindPublicKeyInvalidPointEncoding verifies that BlindPublicKey rejects
 // a 32-byte payload that is the correct length but is not a valid Ed25519
-// curve point encoding.
+// curve point encoding. The y coordinates used here (2, 7, 12) are known
+// non-residues that produce no valid x on the Ed25519 curve.
 func TestBlindPublicKeyInvalidPointEncoding(t *testing.T) {
 	bf, _ := GenerateBlindingFactor(rand.Reader)
 
-	// All 0xFF bytes: valid length but not a valid curve point.
+	// y = 2 (little-endian): not on the Ed25519 curve.
 	badPub := make(PublicKey, PublicKeySize)
-	for i := range badPub {
-		badPub[i] = 0xFF
-	}
+	badPub[0] = 0x02
 	_, err := BlindPublicKey(badPub, bf)
 	if err == nil {
-		t.Error("should reject invalid point encoding (all 0xFF)")
+		t.Error("should reject invalid point encoding (y=2)")
 	}
 
-	// All zeros except last byte high bit set: not a valid point.
+	// y = 7 (little-endian): also not on the curve.
 	badPub2 := make(PublicKey, PublicKeySize)
-	badPub2[31] = 0x80 // sign bit set, rest zero — not on curve
+	badPub2[0] = 0x07
 	_, err = BlindPublicKey(badPub2, bf)
 	if err == nil {
-		t.Error("should reject invalid point encoding (zero with sign bit)")
+		t.Error("should reject invalid point encoding (y=7)")
 	}
 
-	// Random bytes from a non-point encoding. The probability that 32
-	// random bytes happen to land on a valid Ed25519 point is negligible.
-	randomBad := make(PublicKey, PublicKeySize)
-	// Use a known non-point: high bytes that exceed the field prime.
-	randomBad[31] = 0xFE
-	for i := 0; i < 31; i++ {
-		randomBad[i] = 0xFF
-	}
-	_, err = BlindPublicKey(randomBad, bf)
+	// y = 12 (little-endian): another non-point.
+	badPub3 := make(PublicKey, PublicKeySize)
+	badPub3[0] = 0x0C
+	_, err = BlindPublicKey(badPub3, bf)
 	if err == nil {
-		t.Error("should reject invalid point encoding (above field prime)")
+		t.Error("should reject invalid point encoding (y=12)")
 	}
 }
 
