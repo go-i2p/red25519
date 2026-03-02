@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"testing"
-
-	"filippo.io/edwards25519"
 )
 
 func TestGenerateBlindingFactor(t *testing.T) {
@@ -243,19 +241,18 @@ func TestMultipleBlinding(t *testing.T) {
 	blindedOnce, _ := BlindPublicKey(pub, bf1)
 	blindedTwice, _ := BlindPublicKey(blindedOnce, bf2)
 
-	// Compute combined blinding factor: bf_combined = bf1 · bf2 mod ℓ
-	s1, _ := edwards25519.NewScalar().SetBytesWithClamping(bf1)
-	s2, _ := edwards25519.NewScalar().SetBytesWithClamping(bf2)
-	combined := edwards25519.NewScalar().Multiply(s1, s2)
+	// Compose the two blinding factors and blind once.
+	composed, err := ComposeBlindingFactors(bf1, bf2)
+	if err != nil {
+		t.Fatalf("ComposeBlindingFactors failed: %v", err)
+	}
+	blindedComposed, err := BlindPublicKey(pub, composed)
+	if err != nil {
+		t.Fatalf("BlindPublicKey with composed factor failed: %v", err)
+	}
 
-	// Single blinding with combined factor.
-	// We need to use the raw scalar, not a clamped value,
-	// so we directly compute b_combined · A.
-	A, _ := edwards25519.NewIdentityPoint().SetBytes(pub)
-	blindedDirect := edwards25519.NewIdentityPoint().ScalarMult(combined, A)
-
-	if !bytes.Equal(blindedTwice, blindedDirect.Bytes()) {
-		t.Error("sequential blinding should equal single blinding with combined factor")
+	if !bytes.Equal(blindedTwice, blindedComposed) {
+		t.Error("sequential blinding should equal single blinding with composed factor")
 	}
 
 	// Also verify the private key side: blinding priv with bf1 then bf2
@@ -350,5 +347,140 @@ func TestBlindedSignVerifyMultipleMessages(t *testing.T) {
 		if !Verify(blindedPub, msg, sig) {
 			t.Errorf("blinded sign/verify failed for message %q", m)
 		}
+	}
+}
+
+// TestComposeBlindingFactors verifies that ComposeBlindingFactors produces
+// a factor whose single-pass blinding equals sequential blinding.
+func TestComposeBlindingFactors(t *testing.T) {
+	pub, _, _ := GenerateKey(rand.Reader)
+	bf1, _ := GenerateBlindingFactor(rand.Reader)
+	bf2, _ := GenerateBlindingFactor(rand.Reader)
+
+	composed, err := ComposeBlindingFactors(bf1, bf2)
+	if err != nil {
+		t.Fatalf("ComposeBlindingFactors failed: %v", err)
+	}
+	if len(composed) != BlindingFactorSize {
+		t.Errorf("composed factor length = %d, want %d", len(composed), BlindingFactorSize)
+	}
+
+	// Sequential: blind(blind(pub, bf1), bf2)
+	bp1, _ := BlindPublicKey(pub, bf1)
+	bpSeq, _ := BlindPublicKey(bp1, bf2)
+
+	// Composed: blind(pub, composed)
+	bpComp, err := BlindPublicKey(pub, composed)
+	if err != nil {
+		t.Fatalf("BlindPublicKey with composed factor failed: %v", err)
+	}
+
+	if !bpSeq.Equal(bpComp) {
+		t.Error("composed blinding should equal sequential blinding")
+	}
+}
+
+// TestComposeBlindingFactorsWithPrivateKey verifies that a composed factor
+// produces the same blinded public key from both the public and private
+// key sides.
+func TestComposeBlindingFactorsWithPrivateKey(t *testing.T) {
+	_, priv, _ := GenerateKey(rand.Reader)
+	bf1, _ := GenerateBlindingFactor(rand.Reader)
+	bf2, _ := GenerateBlindingFactor(rand.Reader)
+
+	composed, _ := ComposeBlindingFactors(bf1, bf2)
+
+	// Blind the private key with the composed factor.
+	blindedPriv, err := BlindPrivateKey(priv, composed)
+	if err != nil {
+		t.Fatalf("BlindPrivateKey with composed factor failed: %v", err)
+	}
+
+	// The derived public key should match BlindPublicKey with composed factor.
+	blindedPub, _ := BlindPublicKey(priv.Public().(PublicKey), composed)
+	derivedPub := blindedPriv.Public().(PublicKey)
+
+	if !blindedPub.Equal(derivedPub) {
+		t.Error("BlindPublicKey(pub, composed) != BlindPrivateKey(priv, composed).Public()")
+	}
+
+	// Sign with composed-blinded private key, verify with composed-blinded public key.
+	msg := []byte("composed factor private key test")
+	sig := Sign(blindedPriv, msg)
+	if !Verify(blindedPub, msg, sig) {
+		t.Error("composed-blinded sign/verify failed")
+	}
+}
+
+// TestComposeBlindingFactorsBadInputs verifies error handling for invalid inputs.
+func TestComposeBlindingFactorsBadInputs(t *testing.T) {
+	bf, _ := GenerateBlindingFactor(rand.Reader)
+
+	// Bad first factor length.
+	if _, err := ComposeBlindingFactors(BlindingFactor(make([]byte, 16)), bf); err == nil {
+		t.Error("should reject short first factor")
+	}
+	// Bad second factor length.
+	if _, err := ComposeBlindingFactors(bf, BlindingFactor(make([]byte, 16))); err == nil {
+		t.Error("should reject short second factor")
+	}
+	// Empty factors.
+	if _, err := ComposeBlindingFactors(BlindingFactor{}, bf); err == nil {
+		t.Error("should reject empty first factor")
+	}
+	if _, err := ComposeBlindingFactors(bf, BlindingFactor{}); err == nil {
+		t.Error("should reject empty second factor")
+	}
+}
+
+// TestComposeBlindingFactorsChaining verifies that composition is associative:
+// compose(compose(bf1, bf2), bf3) == compose(bf1, compose(bf2, bf3))
+func TestComposeBlindingFactorsChaining(t *testing.T) {
+	pub, _, _ := GenerateKey(rand.Reader)
+	bf1, _ := GenerateBlindingFactor(rand.Reader)
+	bf2, _ := GenerateBlindingFactor(rand.Reader)
+	bf3, _ := GenerateBlindingFactor(rand.Reader)
+
+	// Left-associative: (bf1 * bf2) * bf3
+	left12, _ := ComposeBlindingFactors(bf1, bf2)
+	leftAll, _ := ComposeBlindingFactors(left12, bf3)
+
+	// Right-associative: bf1 * (bf2 * bf3)
+	right23, _ := ComposeBlindingFactors(bf2, bf3)
+	rightAll, _ := ComposeBlindingFactors(bf1, right23)
+
+	// Both composed factors should produce the same blinded public key.
+	bpLeft, _ := BlindPublicKey(pub, leftAll)
+	bpRight, _ := BlindPublicKey(pub, rightAll)
+
+	if !bpLeft.Equal(bpRight) {
+		t.Error("composition should be associative")
+	}
+
+	// And should match triple sequential blinding.
+	bp1, _ := BlindPublicKey(pub, bf1)
+	bp12, _ := BlindPublicKey(bp1, bf2)
+	bp123, _ := BlindPublicKey(bp12, bf3)
+
+	if !bpLeft.Equal(bp123) {
+		t.Error("triple composition should match triple sequential blinding")
+	}
+}
+
+// TestComposeBlindingFactorsCommutativity verifies that composition is
+// commutative for public key blinding: compose(bf1, bf2) == compose(bf2, bf1).
+func TestComposeBlindingFactorsCommutativity(t *testing.T) {
+	pub, _, _ := GenerateKey(rand.Reader)
+	bf1, _ := GenerateBlindingFactor(rand.Reader)
+	bf2, _ := GenerateBlindingFactor(rand.Reader)
+
+	c12, _ := ComposeBlindingFactors(bf1, bf2)
+	c21, _ := ComposeBlindingFactors(bf2, bf1)
+
+	bp12, _ := BlindPublicKey(pub, c12)
+	bp21, _ := BlindPublicKey(pub, c21)
+
+	if !bp12.Equal(bp21) {
+		t.Error("composition should be commutative")
 	}
 }

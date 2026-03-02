@@ -49,6 +49,17 @@ func clampBlindingFactor(b []byte) {
 	b[31] |= 64
 }
 
+// scalarFromBlind converts a BlindingFactor to an edwards25519 scalar.
+// It first attempts canonical decoding (for composed factors produced by
+// ComposeBlindingFactors), falling back to clamped decoding (for factors
+// produced by GenerateBlindingFactor or external sources).
+func scalarFromBlind(blind BlindingFactor) (*edwards25519.Scalar, error) {
+	if s, err := edwards25519.NewScalar().SetCanonicalBytes(blind); err == nil {
+		return s, nil
+	}
+	return edwards25519.NewScalar().SetBytesWithClamping(blind)
+}
+
 // BlindPublicKey derives a blinded public key by multiplying the public key
 // point A by the blinding factor scalar b: A' = b · A.
 // The result is unlinkable to the original public key without knowledge
@@ -66,7 +77,7 @@ func BlindPublicKey(pub PublicKey, blind BlindingFactor) (PublicKey, error) {
 		return nil, fmt.Errorf("red25519: invalid public key: %w", err)
 	}
 
-	b, err := edwards25519.NewScalar().SetBytesWithClamping(blind)
+	b, err := scalarFromBlind(blind)
 	if err != nil {
 		return nil, fmt.Errorf("red25519: invalid blinding factor: %w", err)
 	}
@@ -95,7 +106,7 @@ func BlindPrivateKey(priv PrivateKey, blind BlindingFactor) (PrivateKey, error) 
 		return nil, fmt.Errorf("red25519: bad blinding factor length: %d", len(blind))
 	}
 
-	b, err := edwards25519.NewScalar().SetBytesWithClamping(blind)
+	b, err := scalarFromBlind(blind)
 	if err != nil {
 		return nil, fmt.Errorf("red25519: invalid blinding factor: %w", err)
 	}
@@ -131,6 +142,38 @@ func deriveBlindedPrefix(blind BlindingFactor, originalPrefix []byte) []byte {
 	h.Write(originalPrefix)
 	digest := h.Sum(nil)
 	return digest[:32]
+}
+
+// ComposeBlindingFactors computes the scalar product of two blinding
+// factors: result = bf1 · bf2 mod ℓ. When used with BlindPublicKey, the
+// composed factor produces the same blinded public key as sequential
+// blinding with bf1 then bf2:
+//
+//	composed, _ := ComposeBlindingFactors(bf1, bf2)
+//	BlindPublicKey(pub, composed) == BlindPublicKey(BlindPublicKey(pub, bf1), bf2)
+//
+// For private key blinding, the composed factor yields the same scalar
+// and public key but a different deterministic nonce prefix, so signatures
+// will differ from those produced by sequential blinding. Both are valid.
+func ComposeBlindingFactors(bf1, bf2 BlindingFactor) (BlindingFactor, error) {
+	if len(bf1) != BlindingFactorSize {
+		return nil, fmt.Errorf("red25519: bad first blinding factor length: %d", len(bf1))
+	}
+	if len(bf2) != BlindingFactorSize {
+		return nil, fmt.Errorf("red25519: bad second blinding factor length: %d", len(bf2))
+	}
+
+	s1, err := scalarFromBlind(bf1)
+	if err != nil {
+		return nil, fmt.Errorf("red25519: invalid first blinding factor: %w", err)
+	}
+	s2, err := scalarFromBlind(bf2)
+	if err != nil {
+		return nil, fmt.Errorf("red25519: invalid second blinding factor: %w", err)
+	}
+
+	composed := edwards25519.NewScalar().Multiply(s1, s2)
+	return BlindingFactor(composed.Bytes()), nil
 }
 
 // isValidPrivateKeyLen reports whether priv has a valid length
