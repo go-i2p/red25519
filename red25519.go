@@ -10,7 +10,10 @@
 package red25519
 
 import (
+	"crypto"
+	cryptorand "crypto/rand"
 	"crypto/sha512"
+	"crypto/subtle"
 	"io"
 
 	"filippo.io/edwards25519"
@@ -32,16 +35,14 @@ const (
 type PublicKey []byte
 
 // Equal reports whether pub and x have the same value.
-func (pub PublicKey) Equal(x PublicKey) bool {
-	if len(pub) != len(x) {
+// x must be of type PublicKey; if not, Equal returns false.
+// The comparison is constant-time.
+func (pub PublicKey) Equal(x crypto.PublicKey) bool {
+	xx, ok := x.(PublicKey)
+	if !ok {
 		return false
 	}
-	for i := range pub {
-		if pub[i] != x[i] {
-			return false
-		}
-	}
-	return true
+	return subtle.ConstantTimeCompare(pub, xx) == 1
 }
 
 // PrivateKey is the type of Ed25519 private keys.
@@ -71,21 +72,22 @@ func (priv PrivateKey) Seed() []byte {
 }
 
 // Equal reports whether priv and x have the same value.
-func (priv PrivateKey) Equal(x PrivateKey) bool {
-	if len(priv) != len(x) {
+// x must be of type PrivateKey; if not, Equal returns false.
+// The comparison is constant-time.
+func (priv PrivateKey) Equal(x crypto.PrivateKey) bool {
+	xx, ok := x.(PrivateKey)
+	if !ok {
 		return false
 	}
-	for i := range priv {
-		if priv[i] != x[i] {
-			return false
-		}
-	}
-	return true
+	return subtle.ConstantTimeCompare(priv, xx) == 1
 }
 
 // GenerateKey generates a public/private key pair using entropy from rand.
 // If rand is nil, crypto/rand.Reader will be used.
 func GenerateKey(rand io.Reader) (PublicKey, PrivateKey, error) {
+	if rand == nil {
+		rand = cryptorand.Reader
+	}
 	seed := make([]byte, SeedSize)
 	if _, err := io.ReadFull(rand, seed); err != nil {
 		return nil, nil, err
@@ -228,8 +230,12 @@ func Verify(publicKey PublicKey, message []byte, sig []byte) bool {
 	}
 
 	// k = SHA-512(R || publicKey || message), reduced mod l.
+	// Use the raw signature bytes (sig[:32]) rather than re-encoding R,
+	// matching RFC 8032 §5.1.7 and crypto/ed25519. Since non-canonical
+	// encodings are rejected above, sig[:32] == R.Bytes() for all
+	// accepted inputs.
 	kHash := sha512.New()
-	kHash.Write(R.Bytes())
+	kHash.Write(sig[:32])
 	kHash.Write(publicKey)
 	kHash.Write(message)
 	kDigest := kHash.Sum(nil)

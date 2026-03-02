@@ -1,6 +1,7 @@
 package red25519
 
 import (
+	cryptorand "crypto/rand"
 	"crypto/sha512"
 	"fmt"
 	"io"
@@ -25,9 +26,13 @@ const (
 type BlindingFactor []byte
 
 // GenerateBlindingFactor generates a random blinding factor using entropy
-// from rand. The output is clamped per Ed25519 convention: low 3 bits
+// from rand. If rand is nil, crypto/rand.Reader will be used.
+// The output is clamped per Ed25519 convention: low 3 bits
 // cleared, bit 254 set, bit 255 cleared.
 func GenerateBlindingFactor(rand io.Reader) (BlindingFactor, error) {
+	if rand == nil {
+		rand = cryptorand.Reader
+	}
 	buf := make([]byte, BlindingFactorSize)
 	if _, err := io.ReadFull(rand, buf); err != nil {
 		return nil, fmt.Errorf("red25519: reading random bytes: %w", err)

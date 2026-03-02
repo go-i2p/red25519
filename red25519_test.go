@@ -35,6 +35,20 @@ func TestGenerateKeyRandError(t *testing.T) {
 	}
 }
 
+func TestGenerateKeyNilRand(t *testing.T) {
+	// nil rand should fall back to crypto/rand.Reader, matching crypto/ed25519.
+	pub, priv, err := GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey(nil) failed: %v", err)
+	}
+	if len(pub) != PublicKeySize {
+		t.Errorf("public key length = %d, want %d", len(pub), PublicKeySize)
+	}
+	if len(priv) != PrivateKeySize {
+		t.Errorf("private key length = %d, want %d", len(priv), PrivateKeySize)
+	}
+}
+
 type errReader struct{ err error }
 
 func (r *errReader) Read([]byte) (int, error) { return 0, r.err }
@@ -242,6 +256,13 @@ func TestPublicKeyEqual(t *testing.T) {
 	if pub1.Equal(PublicKey{}) {
 		t.Error("should not equal empty key")
 	}
+	// Wrong type should return false, not panic.
+	if pub1.Equal("not a key") {
+		t.Error("should return false for wrong type")
+	}
+	if pub1.Equal(42) {
+		t.Error("should return false for non-key type")
+	}
 }
 
 func TestPrivateKeyEqual(t *testing.T) {
@@ -253,6 +274,13 @@ func TestPrivateKeyEqual(t *testing.T) {
 	}
 	if priv1.Equal(priv2) {
 		t.Error("different private keys should not be equal")
+	}
+	// Wrong type should return false, not panic.
+	if priv1.Equal("not a key") {
+		t.Error("should return false for wrong type")
+	}
+	if priv1.Equal(42) {
+		t.Error("should return false for non-key type")
 	}
 }
 

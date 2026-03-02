@@ -40,6 +40,17 @@ func TestGenerateBlindingFactorRandError(t *testing.T) {
 	}
 }
 
+func TestGenerateBlindingFactorNilRand(t *testing.T) {
+	// nil rand should fall back to crypto/rand.Reader.
+	bf, err := GenerateBlindingFactor(nil)
+	if err != nil {
+		t.Fatalf("GenerateBlindingFactor(nil) failed: %v", err)
+	}
+	if len(bf) != BlindingFactorSize {
+		t.Errorf("blinding factor length = %d, want %d", len(bf), BlindingFactorSize)
+	}
+}
+
 func TestGenerateBlindingFactorUniqueness(t *testing.T) {
 	bf1, _ := GenerateBlindingFactor(rand.Reader)
 	bf2, _ := GenerateBlindingFactor(rand.Reader)
