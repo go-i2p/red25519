@@ -14,10 +14,14 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha512"
 	"crypto/subtle"
+	"errors"
 	"io"
 
 	"filippo.io/edwards25519"
 )
+
+// Compile-time check: PrivateKey implements crypto.Signer.
+var _ crypto.Signer = PrivateKey(nil)
 
 const (
 	// PublicKeySize is the size, in bytes, of public keys.
@@ -52,7 +56,8 @@ type PrivateKey []byte
 
 // Public returns the PublicKey corresponding to priv.
 // Works for both normal (64-byte) and blinded (96-byte) private keys.
-func (priv PrivateKey) Public() PublicKey {
+// The returned value has underlying type PublicKey.
+func (priv PrivateKey) Public() crypto.PublicKey {
 	pub := make(PublicKey, PublicKeySize)
 	if len(priv) == blindedPrivateKeySize {
 		copy(pub, priv[64:96])
@@ -60,6 +65,18 @@ func (priv PrivateKey) Public() PublicKey {
 		copy(pub, priv[SeedSize:])
 	}
 	return pub
+}
+
+// Sign signs the given message with priv, implementing crypto.Signer.
+// Ed25519 performs two passes over messages to be signed and therefore cannot
+// handle pre-hashed messages. Thus opts.HashFunc() must return zero to indicate
+// the message hasn't been hashed. This can be achieved by passing
+// crypto.Hash(0) as the value for opts.
+func (priv PrivateKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error) {
+	if opts.HashFunc() != crypto.Hash(0) {
+		return nil, errors.New("red25519: cannot sign hashed message")
+	}
+	return Sign(priv, digest), nil
 }
 
 // Seed returns the private key seed (the first 32 bytes).
@@ -93,7 +110,7 @@ func GenerateKey(rand io.Reader) (PublicKey, PrivateKey, error) {
 		return nil, nil, err
 	}
 	priv := NewKeyFromSeed(seed)
-	return priv.Public(), priv, nil
+	return priv.Public().(PublicKey), priv, nil
 }
 
 // NewKeyFromSeed calculates a private key from a seed. Panics if
@@ -176,7 +193,7 @@ func Sign(privateKey PrivateKey, message []byte) []byte {
 	// R = r * B
 	R := edwards25519.NewIdentityPoint().ScalarBaseMult(r)
 
-	pubKey := privateKey.Public()
+	pubKey := privateKey.Public().(PublicKey)
 
 	// k = SHA-512(R || pubkey || message), reduced mod l.
 	kHash := sha512.New()

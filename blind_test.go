@@ -143,7 +143,7 @@ func TestBlindKeyInvariant(t *testing.T) {
 		_, priv, _ := GenerateKey(rand.Reader)
 		bf, _ := GenerateBlindingFactor(rand.Reader)
 
-		blindedPub, err := BlindPublicKey(priv.Public(), bf)
+		blindedPub, err := BlindPublicKey(priv.Public().(PublicKey), bf)
 		if err != nil {
 			t.Fatalf("BlindPublicKey failed: %v", err)
 		}
@@ -153,7 +153,7 @@ func TestBlindKeyInvariant(t *testing.T) {
 			t.Fatalf("BlindPrivateKey failed: %v", err)
 		}
 
-		derivedPub := blindedPriv.Public()
+		derivedPub := blindedPriv.Public().(PublicKey)
 		if !blindedPub.Equal(derivedPub) {
 			t.Errorf("invariant violated: BlindPublicKey(pub, bf) != BlindPrivateKey(priv, bf).Public()")
 		}
@@ -167,7 +167,7 @@ func TestBlindedSignVerify(t *testing.T) {
 	bf, _ := GenerateBlindingFactor(rand.Reader)
 
 	blindedPriv, _ := BlindPrivateKey(priv, bf)
-	blindedPub, _ := BlindPublicKey(priv.Public(), bf)
+	blindedPub, _ := BlindPublicKey(priv.Public().(PublicKey), bf)
 
 	msg := []byte("blinded signature test")
 	sig := Sign(blindedPriv, msg)
@@ -182,7 +182,7 @@ func TestBlindedSignVerify(t *testing.T) {
 	}
 
 	// Verify with original public key should fail.
-	if Verify(priv.Public(), msg, sig) {
+	if Verify(priv.Public().(PublicKey), msg, sig) {
 		t.Error("blinded signature should not verify with original public key")
 	}
 }
@@ -208,7 +208,7 @@ func TestBlindedSignTamperedMessage(t *testing.T) {
 	_, priv, _ := GenerateKey(rand.Reader)
 	bf, _ := GenerateBlindingFactor(rand.Reader)
 	blindedPriv, _ := BlindPrivateKey(priv, bf)
-	blindedPub, _ := BlindPublicKey(priv.Public(), bf)
+	blindedPub, _ := BlindPublicKey(priv.Public().(PublicKey), bf)
 
 	msg := []byte("original blinded message")
 	sig := Sign(blindedPriv, msg)
@@ -223,7 +223,7 @@ func TestBlindedSignEmptyMessage(t *testing.T) {
 	_, priv, _ := GenerateKey(rand.Reader)
 	bf, _ := GenerateBlindingFactor(rand.Reader)
 	blindedPriv, _ := BlindPrivateKey(priv, bf)
-	blindedPub, _ := BlindPublicKey(priv.Public(), bf)
+	blindedPub, _ := BlindPublicKey(priv.Public().(PublicKey), bf)
 
 	sig := Sign(blindedPriv, []byte{})
 	if !Verify(blindedPub, []byte{}, sig) {
@@ -263,7 +263,7 @@ func TestMultipleBlinding(t *testing.T) {
 	blindedPriv1, _ := BlindPrivateKey(priv, bf1)
 	blindedPriv2, _ := BlindPrivateKey(blindedPriv1, bf2)
 
-	if !bytes.Equal(blindedPriv2.Public(), blindedTwice) {
+	if !bytes.Equal(blindedPriv2.Public().(PublicKey), blindedTwice) {
 		t.Error("sequential private key blinding should match sequential public key blinding")
 	}
 
@@ -336,7 +336,7 @@ func TestBlindedSignVerifyMultipleMessages(t *testing.T) {
 	_, priv, _ := GenerateKey(rand.Reader)
 	bf, _ := GenerateBlindingFactor(rand.Reader)
 	blindedPriv, _ := BlindPrivateKey(priv, bf)
-	blindedPub, _ := BlindPublicKey(priv.Public(), bf)
+	blindedPub, _ := BlindPublicKey(priv.Public().(PublicKey), bf)
 
 	messages := []string{
 		"message one",

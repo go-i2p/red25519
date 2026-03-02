@@ -2,6 +2,7 @@ package red25519
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
@@ -74,7 +75,7 @@ func TestNewKeyFromSeedMatchesStdlib(t *testing.T) {
 	stdPriv := ed25519.NewKeyFromSeed(seed)
 
 	// Public keys should match.
-	if !bytes.Equal([]byte(redPriv.Public()), stdPriv.Public().(ed25519.PublicKey)) {
+	if !bytes.Equal([]byte(redPriv.Public().(PublicKey)), stdPriv.Public().(ed25519.PublicKey)) {
 		t.Error("public key does not match crypto/ed25519")
 	}
 }
@@ -219,7 +220,7 @@ func TestCompatibilitySignWithStdlib(t *testing.T) {
 	}
 
 	// Cross-verify: stdlib sig verified by us.
-	if !Verify(redPriv.Public(), msg, stdSig) {
+	if !Verify(redPriv.Public().(PublicKey), msg, stdSig) {
 		t.Error("red25519 failed to verify crypto/ed25519 signature")
 	}
 }
@@ -340,4 +341,138 @@ func TestEdgeCases(t *testing.T) {
 			t.Error("should reject non-canonical S >= l")
 		}
 	})
+}
+
+// TestPrivateKeyImplementsSigner verifies that PrivateKey satisfies crypto.Signer.
+func TestPrivateKeyImplementsSigner(t *testing.T) {
+	_, priv, err := GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	var signer crypto.Signer = priv
+	_ = signer // compile-time check; runtime confirms no panic
+}
+
+// TestPrivateKeySignMethod tests the crypto.Signer Sign method.
+func TestPrivateKeySignMethod(t *testing.T) {
+	pub, priv, err := GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	msg := []byte("signer interface test")
+
+	// Sign via the crypto.Signer method (Ed25519 pure: hash = 0).
+	sig, err := priv.Sign(rand.Reader, msg, crypto.Hash(0))
+	if err != nil {
+		t.Fatalf("PrivateKey.Sign failed: %v", err)
+	}
+
+	if !Verify(pub, msg, sig) {
+		t.Error("signature from PrivateKey.Sign failed verification")
+	}
+
+	// Must produce the same signature as the package-level Sign function.
+	sigDirect := Sign(priv, msg)
+	if !bytes.Equal(sig, sigDirect) {
+		t.Error("PrivateKey.Sign and package-level Sign produced different signatures")
+	}
+}
+
+// TestPrivateKeySignMethodRejectsHash verifies that the Sign method
+// rejects pre-hashed messages.
+func TestPrivateKeySignMethodRejectsHash(t *testing.T) {
+	_, priv, _ := GenerateKey(rand.Reader)
+
+	_, err := priv.Sign(rand.Reader, []byte("data"), crypto.SHA256)
+	if err == nil {
+		t.Error("expected error when signing with non-zero hash, got nil")
+	}
+	_, err = priv.Sign(rand.Reader, []byte("data"), crypto.SHA512)
+	if err == nil {
+		t.Error("expected error when signing with SHA-512 hash, got nil")
+	}
+}
+
+// TestPrivateKeySignMethodNilRand verifies that the Sign method works
+// when rand is nil (Ed25519 signing is deterministic, rand is unused).
+func TestPrivateKeySignMethodNilRand(t *testing.T) {
+	pub, priv, _ := GenerateKey(rand.Reader)
+	msg := []byte("nil rand signer test")
+
+	sig, err := priv.Sign(nil, msg, crypto.Hash(0))
+	if err != nil {
+		t.Fatalf("PrivateKey.Sign(nil, ...) failed: %v", err)
+	}
+	if !Verify(pub, msg, sig) {
+		t.Error("signature from nil-rand Sign failed verification")
+	}
+}
+
+// TestPrivateKeyPublicReturnsCryptoPublicKey verifies that Public() returns
+// a value satisfying crypto.PublicKey (interface type) with underlying type PublicKey.
+func TestPrivateKeyPublicReturnsCryptoPublicKey(t *testing.T) {
+	_, priv, _ := GenerateKey(rand.Reader)
+
+	cryptoPub := priv.Public()
+
+	// Must be convertible back to PublicKey.
+	pub, ok := cryptoPub.(PublicKey)
+	if !ok {
+		t.Fatal("Public() did not return underlying type PublicKey")
+	}
+	if len(pub) != PublicKeySize {
+		t.Errorf("public key length = %d, want %d", len(pub), PublicKeySize)
+	}
+}
+
+// TestBlindedPrivateKeySignMethod verifies that the crypto.Signer Sign
+// method works with blinded private keys.
+func TestBlindedPrivateKeySignMethod(t *testing.T) {
+	_, priv, _ := GenerateKey(rand.Reader)
+	bf, _ := GenerateBlindingFactor(rand.Reader)
+
+	blindedPriv, err := BlindPrivateKey(priv, bf)
+	if err != nil {
+		t.Fatalf("BlindPrivateKey: %v", err)
+	}
+	blindedPub, err := BlindPublicKey(priv.Public().(PublicKey), bf)
+	if err != nil {
+		t.Fatalf("BlindPublicKey: %v", err)
+	}
+
+	msg := []byte("blinded signer test")
+	sig, err := blindedPriv.Sign(rand.Reader, msg, crypto.Hash(0))
+	if err != nil {
+		t.Fatalf("blinded PrivateKey.Sign failed: %v", err)
+	}
+	if !Verify(blindedPub, msg, sig) {
+		t.Error("blinded signature from PrivateKey.Sign failed verification")
+	}
+}
+
+// TestSignerCompatibilityWithStdlib verifies that red25519.PrivateKey
+// can be used wherever a crypto.Signer is expected, producing signatures
+// compatible with crypto/ed25519.Verify.
+func TestSignerCompatibilityWithStdlib(t *testing.T) {
+	seed := make([]byte, SeedSize)
+	_, _ = io.ReadFull(rand.Reader, seed)
+
+	redPriv := NewKeyFromSeed(seed)
+	stdPub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+
+	msg := []byte("signer stdlib compat")
+
+	// Use via crypto.Signer interface.
+	var signer crypto.Signer = redPriv
+	sig, err := signer.Sign(rand.Reader, msg, crypto.Hash(0))
+	if err != nil {
+		t.Fatalf("crypto.Signer.Sign failed: %v", err)
+	}
+
+	// Verify with stdlib.
+	if !ed25519.Verify(stdPub, msg, sig) {
+		t.Error("crypto/ed25519 failed to verify signature from red25519 crypto.Signer")
+	}
 }
