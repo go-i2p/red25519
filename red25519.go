@@ -51,7 +51,12 @@ func (pub PublicKey) Equal(x crypto.PublicKey) bool {
 
 // PrivateKey is the type of Ed25519 private keys.
 // It has the same layout as crypto/ed25519: 32-byte seed followed by
-// 32-byte public key.
+// 32-byte public key (64 bytes total).
+//
+// Blinded private keys use an extended 96-byte format:
+// scalar(32) || nonce_prefix(32) || pubkey(32). These must only be
+// produced by [BlindPrivateKey]; manually constructing a 96-byte
+// PrivateKey with invalid scalar bytes will cause Sign to panic.
 type PrivateKey []byte
 
 // Public returns the PublicKey corresponding to priv.
@@ -80,8 +85,12 @@ func (priv PrivateKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpt
 }
 
 // Seed returns the private key seed (the first 32 bytes).
-// For normal keys, this can be used with NewKeyFromSeed to regenerate the key.
-// For blinded keys, the first 32 bytes contain the raw scalar, not a seed.
+// For normal keys, this can be used with [NewKeyFromSeed] to regenerate the key.
+//
+// WARNING: For blinded keys (produced by [BlindPrivateKey]), the first 32 bytes
+// contain the raw scalar, not a seed. Calling NewKeyFromSeed with a blinded
+// key's Seed will NOT recreate the blinded key — it will produce an unrelated
+// normal key.
 func (priv PrivateKey) Seed() []byte {
 	seed := make([]byte, SeedSize)
 	copy(seed, priv[:SeedSize])
@@ -143,6 +152,11 @@ func NewKeyFromSeed(seed []byte) PrivateKey {
 // private key. For normal (64-byte) keys, SHA-512 expands the seed to
 // produce (clamped scalar, prefix). For blinded (96-byte) keys, the scalar
 // and prefix are stored directly.
+//
+// Panics if a 96-byte key contains invalid scalar bytes (i.e., bytes that
+// are not a canonical encoding of a scalar mod ℓ). This can only happen
+// if a 96-byte PrivateKey was constructed manually rather than through
+// [BlindPrivateKey], which always produces valid scalar bytes.
 func expandPrivateKey(priv PrivateKey) (scalar *edwards25519.Scalar, prefix []byte) {
 	if len(priv) == blindedPrivateKeySize {
 		// Blinded key: scalar stored directly as canonical bytes.
@@ -229,6 +243,13 @@ func Verify(publicKey PublicKey, message []byte, sig []byte) bool {
 	// Decode public key point A.
 	A, err := edwards25519.NewIdentityPoint().SetBytes(publicKey)
 	if err != nil {
+		return false
+	}
+
+	// Reject the identity point as a public key. If A is the identity,
+	// then k·A = identity for all k, so the verification equation reduces
+	// to S·B = R, allowing trivial forgery on any message.
+	if A.Equal(edwards25519.NewIdentityPoint()) == 1 {
 		return false
 	}
 

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"testing"
+
+	"filippo.io/edwards25519"
 )
 
 func TestGenerateKey(t *testing.T) {
@@ -302,18 +304,37 @@ func TestEdgeCases(t *testing.T) {
 	})
 
 	t.Run("identity point public key", func(t *testing.T) {
-		// The identity point (all zeros in compressed form) is a degenerate
-		// public key. Signatures with it should still "verify" algebraically
-		// but callers should avoid this key in practice.
+		// The identity point is a degenerate public key that allows trivial
+		// forgery: if A = identity, then k·A = identity for all k, so the
+		// verification equation reduces to S·B = R. Verify now rejects the
+		// identity point as a defense-in-depth measure.
 		identity := make(PublicKey, PublicKeySize)
 		identity[0] = 0x01 // compressed identity point encoding in Ed25519
 		_, priv, _ := GenerateKey(rand.Reader)
 		msg := []byte("test")
 		sig := Sign(priv, msg)
-		// Verification with a random sig against identity should fail
-		// because the key/sig don't correspond.
+		// Must be rejected because the identity point is not a valid public key.
 		if Verify(identity, msg, sig) {
-			t.Error("signature should not verify against unrelated identity-like key")
+			t.Error("should reject identity point as public key")
+		}
+	})
+
+	t.Run("identity point forgery attempt", func(t *testing.T) {
+		// Construct a forgery against the identity point: choose an
+		// arbitrary scalar S, compute R = S*B, and form sig = (R || S).
+		// Without the identity check, this would verify for any message.
+		identity := make(PublicKey, PublicKeySize)
+		identity[0] = 0x01 // compressed identity point
+		// Use a trivial scalar: S = 1 (the first canonical byte of 1).
+		sBytes := make([]byte, 32)
+		sBytes[0] = 0x01
+		s, _ := (&edwards25519.Scalar{}).SetCanonicalBytes(sBytes)
+		R := (&edwards25519.Point{}).ScalarBaseMult(s)
+		forgedSig := make([]byte, SignatureSize)
+		copy(forgedSig[:32], R.Bytes())
+		copy(forgedSig[32:], s.Bytes())
+		if Verify(identity, []byte("any message"), forgedSig) {
+			t.Error("forged signature against identity point should be rejected")
 		}
 	})
 
