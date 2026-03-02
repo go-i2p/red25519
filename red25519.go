@@ -50,14 +50,20 @@ func (pub PublicKey) Equal(x PublicKey) bool {
 type PrivateKey []byte
 
 // Public returns the PublicKey corresponding to priv.
+// Works for both normal (64-byte) and blinded (96-byte) private keys.
 func (priv PrivateKey) Public() PublicKey {
 	pub := make(PublicKey, PublicKeySize)
-	copy(pub, priv[SeedSize:])
+	if len(priv) == blindedPrivateKeySize {
+		copy(pub, priv[64:96])
+	} else {
+		copy(pub, priv[SeedSize:])
+	}
 	return pub
 }
 
 // Seed returns the private key seed (the first 32 bytes).
-// This can be used with NewKeyFromSeed to regenerate the private key.
+// For normal keys, this can be used with NewKeyFromSeed to regenerate the key.
+// For blinded keys, the first 32 bytes contain the raw scalar, not a seed.
 func (priv PrivateKey) Seed() []byte {
 	seed := make([]byte, SeedSize)
 	copy(seed, priv[:SeedSize])
@@ -114,23 +120,45 @@ func NewKeyFromSeed(seed []byte) PrivateKey {
 	return priv
 }
 
-// Sign signs the message with privateKey and returns a 64-byte signature.
-// It will panic if len(privateKey) is not PrivateKeySize.
-func Sign(privateKey PrivateKey, message []byte) []byte {
-	if len(privateKey) != PrivateKeySize {
-		panic("red25519: bad private key length")
+// expandPrivateKey extracts the signing scalar and nonce prefix from a
+// private key. For normal (64-byte) keys, SHA-512 expands the seed to
+// produce (clamped scalar, prefix). For blinded (96-byte) keys, the scalar
+// and prefix are stored directly.
+func expandPrivateKey(priv PrivateKey) (scalar *edwards25519.Scalar, prefix []byte) {
+	if len(priv) == blindedPrivateKeySize {
+		// Blinded key: scalar stored directly as canonical bytes.
+		s, err := edwards25519.NewScalar().SetCanonicalBytes(priv[:32])
+		if err != nil {
+			panic("red25519: invalid blinded key scalar: " + err.Error())
+		}
+		prefix = make([]byte, 32)
+		copy(prefix, priv[32:64])
+		return s, prefix
 	}
 
-	// Expand seed via SHA-512 to get scalar a and nonce prefix.
-	seed := privateKey.Seed()
-	h := sha512.Sum512(seed)
-
-	// Clamp the scalar.
-	a, err := edwards25519.NewScalar().SetBytesWithClamping(h[:32])
+	// Normal key: expand seed via SHA-512.
+	h := sha512.Sum512(priv[:SeedSize])
+	s, err := edwards25519.NewScalar().SetBytesWithClamping(h[:32])
 	if err != nil {
 		panic("red25519: internal error clamping scalar: " + err.Error())
 	}
-	prefix := h[32:]
+	prefix = make([]byte, 32)
+	copy(prefix, h[32:64])
+	return s, prefix
+}
+
+// Sign signs the message with privateKey and returns a 64-byte signature.
+// It works with both normal keys (from GenerateKey/NewKeyFromSeed) and
+// blinded keys (from BlindPrivateKey). For blinded keys, the pre-computed
+// scalar is used directly and the nonce is derived from the embedded
+// domain-separated prefix.
+func Sign(privateKey PrivateKey, message []byte) []byte {
+	if !isValidPrivateKeyLen(privateKey) {
+		panic("red25519: bad private key length")
+	}
+
+	// Extract scalar and nonce prefix (works for both normal and blinded keys).
+	a, prefix := expandPrivateKey(privateKey)
 
 	// Deterministic nonce: r = SHA-512(prefix || message), reduced mod l.
 	nHash := sha512.New()
