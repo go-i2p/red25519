@@ -9,9 +9,14 @@
 // BlindingFactor primitives (see blind.go).
 //
 // Verify is intentionally stricter than crypto/ed25519.Verify: it rejects
-// all small-order public keys (order dividing the cofactor 8), which would
+// all small-order public keys (points whose order divides the cofactor 8), which would
 // allow trivial or near-trivial signature forgery. Normal Ed25519 keypairs
 // are unaffected.
+//
+// This package does not implement VerifyWithOptions for Ed25519ctx or Ed25519ph
+// (context strings and pre-hashing). These modes are outside the scope of
+// I2P RedDSA and are not needed for destination blinding. Callers requiring
+// Ed25519ctx/Ed25519ph should use crypto/ed25519.VerifyWithOptions directly.
 package red25519
 
 import (

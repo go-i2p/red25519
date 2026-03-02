@@ -630,6 +630,43 @@ func TestBlindPublicKeySmallOrderRejection(t *testing.T) {
 				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
 			},
 		},
+		// The four order-8 torsion points from ristretto255 test vectors.
+		{
+			name: "order 8 point [1] (sign=1)",
+			encoded: [32]byte{
+				0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f,
+				0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f,
+				0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6,
+				0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0xfa,
+			},
+		},
+		{
+			name: "order 8 point [3] (sign=0)",
+			encoded: [32]byte{
+				0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0,
+				0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98, 0xf0,
+				0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39,
+				0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53, 0xfc, 0x05,
+			},
+		},
+		{
+			name: "order 8 point [5] (sign=0)",
+			encoded: [32]byte{
+				0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f,
+				0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f,
+				0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6,
+				0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0x7a,
+			},
+		},
+		{
+			name: "order 8 point [7] (sign=1)",
+			encoded: [32]byte{
+				0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0,
+				0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98, 0xf0,
+				0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39,
+				0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53, 0xfc, 0x85,
+			},
+		},
 	}
 
 	for _, tc := range smallOrderPoints {
@@ -641,6 +678,79 @@ func TestBlindPublicKeySmallOrderRejection(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestComposeBlindingFactorsRejectsZero verifies that ComposeBlindingFactors
+// eagerly rejects zero-valued input factors, rather than deferring the error
+// to BlindPublicKey/BlindPrivateKey. A zero blinding factor would produce a
+// zero composed factor (0 * x = 0 for any x), which is degenerate.
+func TestComposeBlindingFactorsRejectsZero(t *testing.T) {
+	bf, _ := GenerateBlindingFactor(rand.Reader)
+	zeroBf := BlindingFactor(make([]byte, BlindingFactorSize))
+
+	t.Run("zero first factor", func(t *testing.T) {
+		_, err := ComposeBlindingFactors(zeroBf, bf)
+		if err == nil {
+			t.Error("ComposeBlindingFactors should reject zero first factor")
+		}
+	})
+
+	t.Run("zero second factor", func(t *testing.T) {
+		_, err := ComposeBlindingFactors(bf, zeroBf)
+		if err == nil {
+			t.Error("ComposeBlindingFactors should reject zero second factor")
+		}
+	})
+
+	t.Run("both zero", func(t *testing.T) {
+		_, err := ComposeBlindingFactors(zeroBf, zeroBf)
+		if err == nil {
+			t.Error("ComposeBlindingFactors should reject two zero factors")
+		}
+	})
+}
+
+// TestIdentityScalarBlindingFactor verifies that blinding with the scalar
+// value 1 (the multiplicative identity) produces the same public key.
+// Scalar 1 cannot arise from GenerateBlindingFactor (clamping forces bit 254),
+// but could be constructed manually or result from specific ComposeBlindingFactors
+// inputs. This tests the identity property: 1 * A = A.
+func TestIdentityScalarBlindingFactor(t *testing.T) {
+	pub, priv, _ := GenerateKey(rand.Reader)
+
+	// Construct the scalar 1 as a BlindingFactor (little-endian encoding).
+	oneBf := BlindingFactor(make([]byte, BlindingFactorSize))
+	oneBf[0] = 1
+
+	t.Run("BlindPublicKey identity property", func(t *testing.T) {
+		blindedPub, err := BlindPublicKey(pub, oneBf)
+		if err != nil {
+			t.Fatalf("BlindPublicKey with identity scalar failed: %v", err)
+		}
+		if !pub.Equal(blindedPub) {
+			t.Error("blinding with scalar 1 should produce the same public key")
+		}
+	})
+
+	t.Run("BlindPrivateKey identity property", func(t *testing.T) {
+		blindedPriv, err := BlindPrivateKey(priv, oneBf)
+		if err != nil {
+			t.Fatalf("BlindPrivateKey with identity scalar failed: %v", err)
+		}
+		// The blinded key's public key should match the original.
+		derivedPub := blindedPriv.Public().(PublicKey)
+		if !pub.Equal(derivedPub) {
+			t.Error("blinding private key with scalar 1 should preserve the public key")
+		}
+
+		// Signing with the identity-blinded key should produce valid signatures
+		// verifiable with the original public key.
+		msg := []byte("identity scalar blinding test")
+		sig := Sign(blindedPriv, msg)
+		if !Verify(pub, msg, sig) {
+			t.Error("signature from identity-blinded key should verify with original public key")
+		}
+	})
 }
 
 // BenchmarkBlindPrivateKey benchmarks the BlindPrivateKey function.

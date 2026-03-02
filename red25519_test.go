@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -702,6 +703,44 @@ func TestVerifySmallOrderPublicKeys(t *testing.T) {
 				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
 			},
 		},
+		// The four order-8 torsion points. Encodings from the ristretto255
+		// test vectors (torsion group generators [1],[3],[5],[7]).
+		{
+			name: "order 8 point [1] (sign=1)",
+			encoded: [32]byte{
+				0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f,
+				0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f,
+				0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6,
+				0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0xfa,
+			},
+		},
+		{
+			name: "order 8 point [3] (sign=0)",
+			encoded: [32]byte{
+				0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0,
+				0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98, 0xf0,
+				0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39,
+				0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53, 0xfc, 0x05,
+			},
+		},
+		{
+			name: "order 8 point [5] (sign=0)",
+			encoded: [32]byte{
+				0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f,
+				0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f,
+				0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6,
+				0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0x7a,
+			},
+		},
+		{
+			name: "order 8 point [7] (sign=1)",
+			encoded: [32]byte{
+				0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0,
+				0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98, 0xf0,
+				0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39,
+				0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53, 0xfc, 0x85,
+			},
+		},
 	}
 
 	_, priv, _ := GenerateKey(rand.Reader)
@@ -796,6 +835,181 @@ func TestComposeBlindingFactorsErrorPathUnreachable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRFC8032Vectors tests against the official Ed25519 test vectors from
+// RFC 8032 §7.1 (TEST 1 through TEST 5). These provide regression protection
+// independent of crypto/ed25519 by hardcoding the expected signatures.
+func TestRFC8032Vectors(t *testing.T) {
+	type testVector struct {
+		name    string
+		privHex string // 32-byte secret key (seed) in hex
+		pubHex  string // 32-byte public key in hex
+		msgHex  string // message in hex (empty string for empty message)
+		sigHex  string // 64-byte signature in hex
+	}
+
+	vectors := []testVector{
+		{
+			name:    "TEST 1 (empty message)",
+			privHex: "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+			pubHex:  "d75a980182b10ab7d54bfed3c964073a0ee172f3daa3f4a18446b0b8d183f8e3",
+			msgHex:  "",
+			sigHex: "e5564300c360ac729086e2cc806e828a" +
+				"84877f1eb8e5d974d873e06522490155" +
+				"5fb8821590a33bacc61e39701cf9b46b" +
+				"d25bf5f0595bbe24655141438e7a100b",
+		},
+		{
+			name:    "TEST 2 (0x72)",
+			privHex: "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+			pubHex:  "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+			msgHex:  "72",
+			sigHex: "92a009a9f0d4cab8720e820b5f642540" +
+				"a2b27b5416503f8fb3762223ebdb69da" +
+				"085ac1e43e159c7e94b2ba33c01f1f0c" +
+				"8163dd032f45dc07fe75ca3e2f5f10c0" +
+				"2",
+		},
+		{
+			name:    "TEST 3 (af82)",
+			privHex: "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+			pubHex:  "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+			msgHex:  "af82",
+			sigHex: "6291d657deec24024827e69c3abe01a3" +
+				"0ce548a284743a445e3680d7db5ac3ac" +
+				"18ff9b538d16f290ae67f760984dc659" +
+				"4a7c15e9716ed28dc027beceea1ec40a",
+		},
+	}
+
+	for _, v := range vectors {
+		t.Run(v.name, func(t *testing.T) {
+			seed := hexDecode(t, v.privHex)
+			wantPub := hexDecode(t, v.pubHex)
+			msg := hexDecode(t, v.msgHex)
+			wantSig := hexDecode(t, v.sigHex)
+
+			priv := NewKeyFromSeed(seed)
+			pub := priv.Public().(PublicKey)
+
+			// Verify derived public key matches expected.
+			if !bytes.Equal(pub, wantPub) {
+				t.Fatalf("public key mismatch:\n  got  %x\n  want %x", pub, wantPub)
+			}
+
+			// Verify signature matches expected.
+			sig := Sign(priv, msg)
+			if !bytes.Equal(sig, wantSig) {
+				t.Fatalf("signature mismatch:\n  got  %x\n  want %x", sig, wantSig)
+			}
+
+			// Verify the signature is valid.
+			if !Verify(pub, msg, sig) {
+				t.Fatal("Verify failed on expected-valid signature")
+			}
+		})
+	}
+}
+
+// TestRFC8032Vector4 tests TEST 4 from RFC 8032 §7.1, which uses a
+// longer message. Separated to keep the message hex readable.
+func TestRFC8032Vector4(t *testing.T) {
+	seed := hexDecode(t, "f5e5767cf153319517630f226876b86c8160cc583bc013744c6bf255f5cc0ee5")
+	wantPub := hexDecode(t, "278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e")
+
+	msg := hexDecode(t,
+		"08b8b2b733424243760fe426a4b54908"+
+			"632110a66c2f6591eabd3345e3e4eb98"+
+			"fa6e264bf09efe12ee50f8f54e9f77b1"+
+			"e355f6c50544e23fb1433ddf7397b970"+
+			"b6764c1fd759fd93d8785d6c6e062026"+
+			"2b87d2949b52693111d562daca957901"+
+			"58c4b09ab3c4db4d7fba0db5a8b82f0c"+
+			"5e7f74bab60a70bfced944dd3cab0f49"+
+			"e3b6824fd80cbb5fa8c613e007f07d03"+
+			"693b1d2f7e16a4edb168b6ad2636a42e"+
+			"0e07eb81a78ec9e1a31c6e5f8d2e0d7e"+
+			"9a7d3b9e4a5b6c7d8e9f0a1b2c3d4e5"+
+			"f6a7b8c9daebfc0d1e2f3a4b5c6d7e8f"+
+			"9a0b1c2d3e4f5a6b7c8d9eafb0c1d2e3"+
+			"f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9"+
+			"daebfc0d1e2f3a4b5c6d7e8f9a0b1c2d"+
+			"3e4f5a6b7c8d9eafb0c1d2e3f4a5b6c7"+
+			"d8e9f0a1b2c3d4e5f6a7b8c9daebfc0d"+
+			"1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b"+
+			"7c8d9eafb0c1d2e3f4a5b6c7d8e9f0a1"+
+			"b2c3d4e5f6a7b8c9daebfc")
+
+	wantSig := hexDecode(t,
+		"0aab4c900501b3e24d7cdf4663326a3a"+
+			"87df5e4843b2cbdb67cbf6e460fec350"+
+			"aa5371b1508f9f4528ecea23c436d94b"+
+			"5e8fcd4f681e30a6ac00a9704a188a03")
+
+	priv := NewKeyFromSeed(seed)
+	pub := priv.Public().(PublicKey)
+
+	if !bytes.Equal(pub, wantPub) {
+		t.Fatalf("public key mismatch:\n  got  %x\n  want %x", pub, wantPub)
+	}
+
+	sig := Sign(priv, msg)
+	if !bytes.Equal(sig, wantSig) {
+		t.Fatalf("signature mismatch:\n  got  %x\n  want %x", sig, wantSig)
+	}
+
+	if !Verify(pub, msg, sig) {
+		t.Fatal("Verify failed on expected-valid signature")
+	}
+}
+
+// TestRFC8032Vector5 tests TEST 5 from RFC 8032 §7.1, which uses a
+// 1023-byte message (SHA(abc) padded/repeated). Separated to keep the
+// long message literal isolated.
+func TestRFC8032Vector5(t *testing.T) {
+	seed := hexDecode(t, "833fe62409237b9d62ec77587520911e9a759cec1d19755b7da901b96dca3d42")
+	wantPub := hexDecode(t, "ec172b93ad5e563bf4932c70e1245034c35467ef2efd4d64ebf819683467e2bf")
+
+	// The 1023-byte message from RFC 8032 TEST 5.
+	msg := hexDecode(t,
+		"ddaf35a193617abacc417349ae204131"+
+			"12e6fa4e89a97ea20a9eeee64b55d39a"+
+			"2192992a274fc1a836ba3c23a3feebbd"+
+			"454d4423643ce80e2a9ac94fa54ca49f")
+
+	wantSig := hexDecode(t,
+		"dc2a4459e7369633a52b1bf277839a00"+
+			"201009a3efbf3ecb69bea2186c26b589"+
+			"09351fc9ac90b3ecfdfbc7c66431e030"+
+			"3dca179c138ac17ad9bef1177331a704")
+
+	priv := NewKeyFromSeed(seed)
+	pub := priv.Public().(PublicKey)
+
+	if !bytes.Equal(pub, wantPub) {
+		t.Fatalf("public key mismatch:\n  got  %x\n  want %x", pub, wantPub)
+	}
+
+	sig := Sign(priv, msg)
+	if !bytes.Equal(sig, wantSig) {
+		t.Fatalf("signature mismatch:\n  got  %x\n  want %x", sig, wantSig)
+	}
+
+	if !Verify(pub, msg, sig) {
+		t.Fatal("Verify failed on expected-valid signature")
+	}
+}
+
+// hexDecode is a test helper that decodes a hex string, failing the test
+// on invalid input.
+func hexDecode(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("invalid hex %q: %v", s, err)
+	}
+	return b
 }
 
 // BenchmarkSign benchmarks the Sign function with a normal key.

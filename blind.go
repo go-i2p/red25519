@@ -44,6 +44,15 @@ func GenerateBlindingFactor(rand io.Reader) (BlindingFactor, error) {
 
 // clampBlindingFactor applies Ed25519 scalar clamping in-place:
 // clear low 3 bits, set bit 254, clear bit 255.
+//
+// Note: This clamping is a compatibility convention inherited from the
+// Ed25519 key derivation procedure. When the clamped value is subsequently
+// passed to [edwards25519.Scalar.SetBytesWithClamping], that function
+// re-applies clamping and then reduces mod ℓ, which destroys the
+// cofactor-clearing property (the scalar is no longer guaranteed to be
+// a multiple of 8). This is harmless because all operations in this
+// package use the prime-order subgroup. See the filippo.io/edwards25519
+// documentation for SetBytesWithClamping for further details.
 func clampBlindingFactor(b []byte) {
 	b[0] &= 248
 	b[31] &= 127
@@ -71,6 +80,13 @@ var zeroScalarBytes = make([]byte, 32)
 // because composed factors (canonical scalars) and generated factors
 // (unclamped byte strings) have different representations. Callers should
 // not rely on which path is taken — only that the returned scalar is valid.
+//
+// Note: A manually-constructed BlindingFactor whose value is already < ℓ
+// will take the canonical path (SetCanonicalBytes), silently bypassing
+// clamping. This is correct for composed factors but means an external
+// caller constructing a BlindingFactor directly should ensure it is either
+// properly clamped or already a valid scalar. Use [GenerateBlindingFactor]
+// or [ComposeBlindingFactors] to avoid this subtlety.
 func scalarFromBlind(blind BlindingFactor) (*edwards25519.Scalar, error) {
 	if s, err := edwards25519.NewScalar().SetCanonicalBytes(blind); err == nil {
 		return s, nil
@@ -93,6 +109,17 @@ func isZeroScalar(s *edwards25519.Scalar) bool {
 // point A by the blinding factor scalar b: A' = b · A.
 // The result is unlinkable to the original public key without knowledge
 // of the blinding factor.
+//
+// BlindPublicKey rejects pure-torsion (small-order) input points but accepts
+// mixed-order points (points with both a prime-order and a torsion component).
+// For a mixed-order public key, the invariant
+//
+//	BlindPublicKey(pub, bf) == BlindPrivateKey(priv, bf).Public()
+//
+// may not hold because BlindPrivateKey always produces a pure prime-order
+// public key (via ScalarBaseMult). This is not a practical concern because
+// all legitimate Ed25519 public keys (from GenerateKey, NewKeyFromSeed,
+// or standard crypto/ed25519) are pure prime-order points.
 func BlindPublicKey(pub PublicKey, blind BlindingFactor) (PublicKey, error) {
 	if len(pub) != PublicKeySize {
 		return nil, fmt.Errorf("red25519: bad public key length: %d", len(pub))
@@ -215,9 +242,15 @@ func ComposeBlindingFactors(bf1, bf2 BlindingFactor) (BlindingFactor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("red25519: invalid first blinding factor: %w", err)
 	}
+	if isZeroScalar(s1) {
+		return nil, fmt.Errorf("red25519: first blinding factor is zero")
+	}
 	s2, err := scalarFromBlind(bf2)
 	if err != nil {
 		return nil, fmt.Errorf("red25519: invalid second blinding factor: %w", err)
+	}
+	if isZeroScalar(s2) {
+		return nil, fmt.Errorf("red25519: second blinding factor is zero")
 	}
 
 	composed := edwards25519.NewScalar().Multiply(s1, s2)
