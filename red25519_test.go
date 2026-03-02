@@ -255,3 +255,61 @@ func TestPrivateKeyEqual(t *testing.T) {
 		t.Error("different private keys should not be equal")
 	}
 }
+
+// TestEdgeCases covers edge-case inputs: nil messages and identity-point
+// public key behavior.
+func TestEdgeCases(t *testing.T) {
+	t.Run("nil message sign/verify", func(t *testing.T) {
+		pub, priv, _ := GenerateKey(rand.Reader)
+		sig := Sign(priv, nil)
+		if !Verify(pub, nil, sig) {
+			t.Error("should verify signature on nil message")
+		}
+		// nil and empty should produce the same signature.
+		sigEmpty := Sign(priv, []byte{})
+		if !bytes.Equal(sig, sigEmpty) {
+			t.Error("nil and empty message should produce identical signatures")
+		}
+	})
+
+	t.Run("identity point public key", func(t *testing.T) {
+		// The identity point (all zeros in compressed form) is a degenerate
+		// public key. Signatures with it should still "verify" algebraically
+		// but callers should avoid this key in practice.
+		identity := make(PublicKey, PublicKeySize)
+		identity[0] = 0x01 // compressed identity point encoding in Ed25519
+		_, priv, _ := GenerateKey(rand.Reader)
+		msg := []byte("test")
+		sig := Sign(priv, msg)
+		// Verification with a random sig against identity should fail
+		// because the key/sig don't correspond.
+		if Verify(identity, msg, sig) {
+			t.Error("signature should not verify against unrelated identity-like key")
+		}
+	})
+
+	t.Run("invalid point encoding in public key", func(t *testing.T) {
+		// All-0xFF is not a valid point encoding.
+		badPub := make(PublicKey, PublicKeySize)
+		for i := range badPub {
+			badPub[i] = 0xFF
+		}
+		if Verify(badPub, []byte("test"), make([]byte, SignatureSize)) {
+			t.Error("should reject invalid point encoding")
+		}
+	})
+
+	t.Run("non-canonical S in signature", func(t *testing.T) {
+		pub, priv, _ := GenerateKey(rand.Reader)
+		msg := []byte("canonical test")
+		sig := Sign(priv, msg)
+
+		// Set S to a value >= l (the group order) by setting all bits.
+		for i := 32; i < 64; i++ {
+			sig[i] = 0xFF
+		}
+		if Verify(pub, msg, sig) {
+			t.Error("should reject non-canonical S >= l")
+		}
+	})
+}
